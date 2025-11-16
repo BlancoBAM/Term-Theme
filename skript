@@ -1,0 +1,519 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# install_custom_prompt.sh
+# Fresh, shell-agnostic custom neon prompt + banner (no Oh-My-Posh)
+# Created based on detailed requirements from ChatGPT conversation
+
+echo "🩸 Installing custom neon prompt system..."
+
+DEST="${HOME}/.local/share/custom_prompt"
+mkdir -p "$DEST"
+
+# -------------------------
+# 1) Red, bold banner (your exact ASCII art)
+# -------------------------
+cat > "$DEST/banner.txt" <<'BANNEREOF'
+\033[1;31m
+@@@@@@@   @@@        @@@@@@   @@@  @@@   @@@@@@@   @@@@@@      @@@@@@@         @@@@@@        @@@@@@@@@@   
+@@@@@@@@  @@@       @@@@@@@@  @@@@ @@@  @@@@@@@@  @@@@@@@@     @@@@@@@@       @@@@@@@@       @@@@@@@@@@@  
+@@!  @@@  @@!       @@!  @@@  @@!@!@@@  !@@       @@!  @@@     @@!  @@@       @@!  @@@       @@! @@! @@!  
+!@   @!@  !@!       !@!  @!@  !@!!@!@!  !@!       !@!  @!@     !@   @!@       !@!  @!@       !@! !@! !@!  
+@!@!@!@   @!!       @!@!@!@!  @!@ !!@!  !@!       @!@  @!!     @!@!@!@        @!@!@!@!       @!! !!@ @!@  
+!!!@!!!!  !!!       !!!@!!!!  !@!  !!!  !!!       !@!  !!!     !!!@!!!!       !!!@!!!!       !@!   ! !@!  
+!!:  !!!  !!:       !!:  !!!  !!:  !!!  :!!       !!:  !!!     !!:  !!!       !!:  !!!       !!:     !!:  
+:!:  !:!   :!:      :!:  !:!  :!:  !:!  :!:       :!:  !:!     :!:  !:!  :!:  :!:  !:!  :!:  :!:     :!:  
+ :: ::::   :: ::::  ::   :::   ::   ::   ::: :::  ::::: ::      :: ::::  :::  ::   :::  :::  :::     ::   
+:: : ::   : :: : :   :   : :  ::    :    :: :: :   : :  :      :: : ::   :::   :   : :  :::   :      :    
+\033[0m
+BANNEREOF
+
+# -------------------------
+# 2) Core prompt renderer for Bash/Zsh
+# -------------------------
+cat > "$DEST/prompt_core.sh" <<'PROMPTEOF'
+#!/bin/bash
+
+# Custom Neon Prompt Core - Recreates 1_shell.omp.json style
+# Colors matched to original theme, neon-fied
+
+# TrueColor helper
+tc() { 
+    printf '\033[38;2;%s;%s;%sm' "$1" "$2" "$3"
+}
+
+reset() { 
+    printf '\033[0m' 
+}
+
+bold() { 
+    printf '\033[1m' 
+}
+
+# Original theme colors (brightened for neon effect)
+COLOR_PINK="255 175 210"      # Original: #ffafd2
+COLOR_LIGHTPINK="255 190 188" # Brighter pink for user
+COLOR_PURPLE="188 147 255"    # Original: #bc93ff  
+COLOR_MAGENTA="238 121 209"   # Original: #ee79d1
+COLOR_GREEN="169 255 180"     # Original: #a9ffb4
+COLOR_WHITE="254 245 237"     # Original: #FEF5ED
+COLOR_RED="239 83 80"         # Error red: #ef5350
+COLOR_CYAN="0 234 255"        # Accent cyan
+
+# Git information (only shows in git repos)
+git_info() {
+    if command -v git >/dev/null 2>&1; then
+        if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            local branch
+            branch=$(git branch --show-current 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null)
+            
+            if [[ -n "$branch" ]]; then
+                local status
+                status=$(git status --porcelain 2>/dev/null)
+                local dirty=""
+                
+                if [[ -n "$status" ]]; then
+                    local unstaged changed untracked
+                    unstaged=$(echo "$status" | grep -E '^.[MD]' | wc -l | tr -d ' ')
+                    changed=$(echo "$status" | grep -E '^[MADRC]' | wc -l | tr -d ' ')
+                    untracked=$(echo "$status" | grep -E '^\?\?' | wc -l | tr -d ' ')
+                    
+                    local total=$((unstaged + changed + untracked))
+                    if [[ $total -gt 0 ]]; then
+                        dirty=" *${total}"
+                    fi
+                fi
+                
+                printf " %s %s%s" "$(tc ${COLOR_MAGENTA})" "$branch" "$dirty"
+                return 0
+            fi
+        fi
+    fi
+    return 1
+}
+
+# Memory info (Linux)
+memory_info() {
+    if [[ -f /proc/meminfo ]]; then
+        local total_mem used_mem mem_pct
+        total_mem=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+        available_mem=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
+        used_mem=$((total_mem - available_mem))
+        mem_pct=$((used_mem * 100 / total_mem))
+        
+        local used_gb total_gb
+        used_gb=$(awk "BEGIN{printf \"%.1f\", ${used_mem}/1024/1024}")
+        total_gb=$(awk "BEGIN{printf \"%.1f\", ${total_mem}/1024/1024}")
+        
+        printf "%s%% (%s/%sGB)" "$mem_pct" "$used_gb" "$total_gb"
+    else
+        printf "N/A"
+    fi
+}
+
+# Shorten path intelligently
+shorten_path() {
+    local path="$1"
+    local home_path="${HOME}"
+    
+    # Replace HOME with ~
+    if [[ "$path" == "$home_path"* ]]; then
+        path="~${path#$home_path}"
+    fi
+    
+    # For very long paths, show only last 3 components
+    if [[ "$path" =~ / ]]; then
+        local base="${path##*/}"
+        local dir="${path%/*}"
+        
+        if [[ $(echo "$dir" | tr -cd '/' | wc -c) -ge 2 ]]; then
+            local first_part="${dir%%/*}"
+            local middle_part=" ... "
+            local last_part="${dir##*/}"
+            
+            # If we're dealing with a deeply nested path
+            if [[ "$dir" =~ /.*/.*/ ]]; then
+                path="${first_part}${middle_part}${last_part}/$base"
+            else
+                path="$dir/$base"
+            fi
+        fi
+    fi
+    
+    printf "%s" "$path"
+}
+
+# Command timing
+__cmd_start_time=0
+__last_cmd_duration=0
+
+record_command_start() {
+    __cmd_start_time=$(date +%s%3N)
+}
+
+record_command_end() {
+    if [[ $__cmd_start_time -gt 0 ]]; then
+        local end_time
+        end_time=$(date +%s%3N)
+        __last_cmd_duration=$((end_time - __cmd_start_time))
+        __cmd_start_time=0
+    else
+        __last_cmd_duration=0
+    fi
+}
+
+# Safe clear function (only in interactive shells)
+safe_clear() {
+    command clear
+    show_banner
+}
+
+# Banner display
+show_banner() {
+    if [[ -f "${DEST}/banner.txt" ]]; then
+        cat "${DEST}/banner.txt"
+        echo
+    fi
+}
+
+# Main prompt rendering
+render_prompt() {
+    local user host path short_path time_str git_segment
+    
+    user=$(whoami)
+    host=$(hostname -s | tr '[:upper:]' '[:lower:]')
+    path=$(pwd)
+    short_path=$(shorten_path "$path")
+    time_str=$(date +"%H:%M")
+    
+    # Build left side segments
+    local left_segments=""
+    
+    # User segment
+    left_segments+="$(tc ${COLOR_LIGHTPINK})${user}$(reset)"
+    left_segments+="$(tc ${COLOR_WHITE})@$(reset)"
+    left_segments+="$(tc ${COLOR_LIGHTPINK})${host}$(reset) "
+    
+    # Time segment  
+    left_segments+="$(tc ${COLOR_PURPLE})${time_str}$(reset)"
+    
+    # Git segment (only if in git repo)
+    git_segment=$(git_info)
+    if [[ -n "$git_segment" ]]; then
+        left_segments+="${git_segment}$(reset)"
+    fi
+    
+    # Path segment
+    left_segments+=" $(tc ${COLOR_PINK})${short_path}$(reset)"
+    
+    # Status/diamond segment
+    local exit_status="$?"
+    local status_color="$COLOR_GREEN"
+    if [[ $exit_status -ne 0 ]]; then
+        status_color="$COLOR_RED"
+    fi
+    left_segments+=" $(tc ${status_color})💎$(reset)"
+    
+    # Build right side (execution time + memory)
+    local right_segments=""
+    if [[ $__last_cmd_duration -gt 0 ]]; then
+        right_segments+="$(tc ${COLOR_PURPLE})${__last_cmd_duration}ms$(reset)"
+    fi
+    
+    local mem_info
+    mem_info=$(memory_info)
+    if [[ "$mem_info" != "N/A" ]]; then
+        if [[ -n "$right_segments" ]]; then
+            right_segments+=" "
+        fi
+        right_segments+="$(tc ${COLOR_CYAN})mem:${mem_info}$(reset)"
+    fi
+    
+    # Calculate positioning
+    local strip_ansi() {
+        sed 's/\x1B\[[0-9;]*[mK]//g'
+    }
+    
+    local left_plain
+    left_plain=$(printf "%s" "$left_segments" | strip_ansi)
+    local right_plain
+    right_plain=$(printf "%s" "$right_segments" | strip_ansi)
+    
+    local term_cols
+    term_cols=$(tput cols 2>/dev/null || echo 80)
+    local left_len=${#left_plain}
+    local right_len=${#right_plain}
+    
+    local padding=""
+    if [[ $left_len -lt $((term_cols - right_len)) ]]; then
+        local pad_len=$((term_cols - left_len - right_len - 1))
+        if [[ $pad_len -gt 0 ]]; then
+            padding=$(printf '%*s' "$pad_len" '')
+        fi
+    fi
+    
+    # Render the prompt
+    printf "%s%s%s\n" "$left_segments" "$padding" "$right_segments"
+    printf "\033[1;31m🩸\033[0m "
+}
+
+# Shell-specific setup
+setup_bash() {
+    PROMPT_COMMAND="record_command_end; render_prompt"
+    trap 'record_command_start' DEBUG
+    
+    # Safe clear only in interactive mode
+    if [[ $- == *i* ]]; then
+        alias clear='safe_clear'
+    fi
+}
+
+setup_zsh() {
+    precmd() {
+        record_command_end
+        render_prompt
+    }
+    
+    preexec() {
+        record_command_start
+    }
+    
+    # Safe clear only in interactive mode  
+    if [[ -o interactive ]]; then
+        alias clear='safe_clear'
+    fi
+}
+
+# Initialize based on shell
+if [[ -n "$BASH_VERSION" ]]; then
+    setup_bash
+elif [[ -n "$ZSH_VERSION" ]]; then
+    setup_zsh
+fi
+
+# Show banner on startup
+if [[ $- == *i* ]] || [[ -o interactive ]]; then
+    show_banner
+fi
+
+# Export DEST for other functions
+export DEST="$DEST"
+PROMPTEOF
+
+# -------------------------
+# 3) Fish shell prompt
+# -------------------------
+cat > "$DEST/prompt.fish" <<'FISHEOF'
+# Fish prompt - custom neon style
+
+function __fish_git_branch_dirty
+    set -l branch (git branch --show-current 2>/dev/null)
+    if test -n "$branch"
+        set -l status (git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+        if test $status -gt 0
+            echo " $branch *$status"
+        else
+            echo " $branch"
+        end
+    end
+end
+
+function fish_prompt
+    set -l user (whoami)
+    set -l host (hostname -s | string lower)
+    set -l path (pwd | string replace -- $HOME '~')
+    set -l time_str (date +"%H:%M")
+    
+    # Colors (RGB)
+    set -l pink (printf '\033[38;2;255;175;210m')
+    set -l lightpink (printf '\033[38;2;255;190;188m') 
+    set -l purple (printf '\033[38;2;188;147;255m')
+    set -l magenta (printf '\033[38;2;238;121;209m')
+    set -l green (printf '\033[38;2;169;255;180m')
+    set -l white (printf '\033[38;2;254;245;237m')
+    set -l red (printf '\033[38;2;239;83;80m')
+    set -l reset (printf '\033[0m')
+    
+    # Build left side
+    printf '%s%s%s%s%s%s%s' $lightpink $user $white '@' $lightpink $host $reset
+    printf ' %s%s%s' $purple $time_str $reset
+    
+    # Git info
+    set -l git_info (__fish_git_branch_dirty)
+    if test -n "$git_info"
+        printf '%s%s%s' $magenta "$git_info" $reset
+    end
+    
+    # Path and diamond
+    printf ' %s%s%s' $pink $path $reset
+    printf ' %s💎%s\n' $green $reset
+    
+    # Red droplet prompt
+    printf '\033[1;31m🩸%s ' $reset
+end
+
+# Banner function for fish
+function show_banner --description 'Show custom banner'
+    if test -f ~/.local/share/custom_prompt/banner.txt
+        cat ~/.local/share/custom_prompt/banner.txt
+        echo
+    end
+end
+
+# Safe clear for fish
+function clear --description 'Clear screen and show banner'
+    command clear
+    show_banner
+end
+
+# Show banner on startup
+if status is-interactive
+    show_banner
+end
+FISHEOF
+
+# -------------------------
+# 4) Shell configuration snippets
+# -------------------------
+cat > "$DEST/bash_snippet.sh" <<'BASHEOF'
+# Custom Neon Prompt for Bash
+export DEST="$HOME/.local/share/custom_prompt"
+if [[ -f "$DEST/prompt_core.sh" ]]; then
+    source "$DEST/prompt_core.sh"
+fi
+BASHEOF
+
+cat > "$DEST/zsh_snippet.sh" <<'ZSHEOF'
+# Custom Neon Prompt for Zsh
+export DEST="$HOME/.local/share/custom_prompt"
+if [[ -f "$DEST/prompt_core.sh" ]]; then
+    source "$DEST/prompt_core.sh"
+fi
+ZSHEOF
+
+# -------------------------
+# 5) Installation script
+# -------------------------
+cat > "$DEST/install_extras.sh" <<'EXTRASEOF'
+#!/bin/bash
+# Optional: Install useful modern tools
+
+echo "📦 Installing optional modern tools..."
+
+# Zoxide (smarter cd)
+if ! command -v zoxide >/dev/null 2>&1; then
+    echo "Installing zoxide..."
+    curl -sSf https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | bash
+fi
+
+# eza (modern ls)
+if ! command -v eza >/dev/null 2>&1; then
+    echo "Installing eza..."
+    if command -v cargo >/dev/null 2>&1; then
+        cargo install eza
+    elif command -v brew >/dev/null 2>&1; then
+        brew install eza
+    elif command -v apt >/dev/null 2>&1; then
+        sudo apt install eza
+    fi
+fi
+
+# Add useful aliases to shell config
+for rc_file in ~/.bashrc ~/.zshrc; do
+    if [[ -f "$rc_file" ]]; then
+        if ! grep -q "custom aliases" "$rc_file"; then
+            cat >> "$rc_file" <<'ALIASEOF'
+
+# Custom aliases
+alias ls='eza --icons --group-directories-first 2>/dev/null || ls'
+alias ll='eza -l --icons --group-directories-first --git 2>/dev/null || ls -l'
+alias la='eza -la --icons --group-directories-first --git 2>/dev/null || ls -la'
+alias lt='eza --tree --icons --group-directories-first 2>/dev/null || ls'
+ALIASEOF
+        fi
+    fi
+done
+
+echo "✅ Optional tools installed!"
+EXTRASEOF
+
+# -------------------------
+# 6) Main installer logic
+# -------------------------
+chmod +x "$DEST/prompt_core.sh"
+chmod +x "$DEST/install_extras.sh"
+
+echo "🔧 Setting up shell configurations..."
+
+# Backup and update shell configs
+setup_shell_config() {
+    local config_file="$1"
+    local snippet_file="$2"
+    
+    if [[ -f "$config_file" ]]; then
+        if ! grep -q "custom_prompt" "$config_file"; then
+            echo "Backing up $config_file to ${config_file}.backup.$(date +%s)"
+            cp "$config_file" "${config_file}.backup.$(date +%s)"
+            
+            echo "# Custom Neon Prompt (installed $(date))" >> "$config_file"
+            cat "$snippet_file" >> "$config_file"
+            echo "Updated $config_file"
+        else
+            echo "⚠️  Custom prompt already installed in $config_file"
+        fi
+    else
+        echo "📝 Creating $config_file"
+        cat "$snippet_file" > "$config_file"
+    fi
+}
+
+# Setup for different shells
+setup_shell_config "$HOME/.bashrc" "$DEST/bash_snippet.sh"
+setup_shell_config "$HOME/.zshrc" "$DEST/zsh_snippet.sh"
+
+# Fish config
+if command -v fish >/dev/null 2>&1; then
+    fish_config_dir="$HOME/.config/fish"
+    fish_config="$fish_config_dir/config.fish"
+    
+    mkdir -p "$fish_config_dir"
+    if [[ -f "$fish_config" ]]; then
+        if ! grep -q "custom_prompt" "$fish_config"; then
+            echo "Backing up $fish_config"
+            cp "$fish_config" "${fish_config}.backup.$(date +%s)"
+            echo -e "\n# Custom Neon Prompt" >> "$fish_config"
+            echo "source $DEST/prompt.fish" >> "$fish_config"
+        fi
+    else
+        echo "# Custom Neon Prompt" > "$fish_config"
+        echo "source $DEST/prompt.fish" >> "$fish_config"
+    fi
+    echo "✅ Fish configuration updated"
+fi
+
+# Offer to install extras
+echo
+read -p "🤔 Install optional modern tools (zoxide, eza)? [y/N] " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    bash "$DEST/install_extras.sh"
+fi
+
+echo
+echo "🎉 Custom neon prompt installation complete!"
+echo
+echo "✨ Features:"
+echo "   • Red droplet prompt (🩸) on new line"
+echo "   • Diamond status indicator (💎)" 
+echo "   • Your custom red banner on startup"
+echo "   • Banner appears after 'clear' command"
+echo "   • Git info only in git repositories"
+echo "   • Original theme colors (neon-fied)"
+echo "   • Safe clear wrapper (interactive only)"
+echo
+echo "🔄 Restart your terminal or run:"
+echo "   source ~/.bashrc  # for bash"
+echo "   source ~/.zshrc   # for zsh"
+echo
+echo "📁 Files installed to: $DEST"
+echo "🔧 You can customize colors and behavior in: $DEST/prompt_core.sh"
